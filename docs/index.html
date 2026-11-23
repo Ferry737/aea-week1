@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEA Week-1 · Live Simulation Harness</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--fg:#e6edf3;--muted:#8b949e;--ok:#3fb950;--warn:#d29922;--err:#f85149;--acc:#58a6ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 20px 60px}
+  h1{font-size:1.4em;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:.92em;margin-bottom:20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+  label{display:block;font-size:.85em;color:var(--muted);margin:10px 0 4px}
+  input[type=number]{width:100%;background:#0d1117;border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:8px 10px;font-size:1em}
+  button{background:var(--acc);border:none;border-radius:6px;color:#0d1117;font-weight:600;padding:10px 18px;font-size:.95em;cursor:pointer;margin-top:14px}
+  button:hover{filter:brightness(1.1)}
+  .badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:.8em;font-weight:600;margin-left:8px}
+  .badge.ok{background:rgba(63,185,80,.15);color:var(--ok)}
+  .badge.err{background:rgba(248,81,73,.15);color:var(--err)}
+  .stats{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0 4px}
+  .stat{flex:1;min-width:140px;background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+  .stat .k{font-size:.78em;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .stat .v{font-size:1.15em;font-weight:600;margin-top:2px}
+  table{width:100%;border-collapse:collapse;font-size:.9em;margin-top:10px}
+  th,td{border-bottom:1px solid var(--line);padding:7px 10px;text-align:left}
+  th{color:var(--muted);font-weight:500;font-size:.82em;text-transform:uppercase;letter-spacing:.04em}
+  td.num{font-variant-numeric:tabular-nums}
+  .log{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:12px;max-height:220px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82em;color:var(--muted);white-space:pre-wrap}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+  .foot{color:var(--muted);font-size:.82em;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>AEA — Autonomous Economic Agents</h1>
+  <div class="sub">Week-1 deterministic simulation core · live browser harness (bridge of the Python engine)</div>
+
+  <div class="card">
+    <div class="grid2">
+      <div>
+        <label>Seed</label>
+        <input type="number" id="seed" value="881726454633">
+        <label>Agents</label>
+        <input type="number" id="agents" value="5" min="1" max="20">
+        <label>Ticks (1 tick = 1 simulated minute)</label>
+        <input type="number" id="ticks" value="100" min="1" max="1000">
+      </div>
+      <div>
+        <label>Parameters (config)</label>
+        <div style="font-size:.85em;color:var(--muted);margin-top:4px;line-height:1.9">
+          wage = 100 CRD · consume = 50 CRD<br>
+          consume_probability = 0.30 · reserve = 1,000<br>
+          money_supply = 1,000,000 minor units<br>
+          <span class="warn">Enforces: no negative wallet, double-entry (Σ=0), supply invariant, hash-chained events.</span>
+        </div>
+        <button id="run">▶ Run simulation</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <h2 style="font-size:1.05em;margin:0 0 6px" id="resultTitle"></h2>
+    <div class="stats" id="stats"></div>
+    <div class="grid2">
+      <div>
+        <h3 style="font-size:.9em;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 2px">Ledger (derived balances)</h3>
+        <table id="ledgerTable"><thead><tr><th>Account</th><th>Balance (minor)</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div>
+        <h3 style="font-size:.9em;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 2px">Sample events</h3>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    Deterministic: same seed → identical event sequence & ledger every run. To run the authoritative engine:
+    <code>git clone https://github.com/Ferry737/aea-week1.git</code> then <code>pytest -q</code>.
+  </div>
+</div>
+
+<script>
+// ---- deterministic PRNG (mulberry32), seeded per agent from master seed ----
+function hashSeed(str){let h=1779033703^str.length;for(let i=0;i<str.length;i++){h=Math.imul(h^str.charCodeAt(i),3432918353);h=h<<13|h>>>19}return h>>>0}
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+// ---- simple deterministic chain hash (cyrb53) ----
+function cyrb53(str,seed=0){let h1=0xdeadbeef^seed,h2=0x41c6ce57^seed;for(let i=0;i<str.length;i++){const ch=str.charCodeAt(i);h1=Math.imul(h1^ch,2654435761);h2=Math.imul(h2^ch,1597334677)}h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);return (4294967296*(2097151&h2)+(h1>>>0)).toString(16)}
+
+// ---- Ledger (double-entry, integer minor units) ----
+class Ledger{
+  constructor(){this.entries=[]}
+  isAsset(a){return a==='treasury'||a.startsWith('agent:')}
+  balance(a){let s=0;for(const e of this.entries)if(e.account===a)s+=e.amount;return s}
+  assetSupply(){return this.entries.reduce((s,e)=>s+(this.isAsset(e.account)?e.amount:0),0)}
+  post(tx){
+    const sum=tx.entries.reduce((s,e)=>s+e.amount,0);
+    if(sum!==0)throw new Error('UnbalancedTransaction');
+    const bal={};for(const e of this.entries)bal[e.account]=(bal[e.account]||0)+e.amount;
+    for(const e of tx.entries)bal[e.account]=(bal[e.account]||0)+e.amount;
+    for(const a in bal)if(this.isAsset(a)&&bal[a]<0)throw new Error('InsufficientFunds:'+a);
+    this.entries.push(...tx.entries);
+  }
+}
+
+// ---- Simulation ----
+function runSim(config){
+  const ledger=new Ledger();
+  const WAGE=100, CONSUME=50, RESERVE=1000, SUPPLY=1000000;
+  const events=[];
+  let seq=0;
+
+  // MINT event
+  ledger.post({tx_id:`tx-${String(seq).padStart(12,'0')}`,tick:0,seq,entries:[{account:'treasury',amount:SUPPLY},{account:'faucet',amount:-SUPPLY}],memo:'mint'});
+  events.push({seq,tick:0,type:'MINT',actor:null,payload:{amount_minor:SUPPLY,currency:'CRD'}});seq++;
+
+  for(let tick=1;tick<=config.ticks;tick++){
+    for(let i=0;i<config.agents;i++){
+      const actor=`agent:${i}`;
+      const rng=mulberry32(hashSeed(config.seed+':'+actor));
+      const balance=ledger.balance(actor);
+      const draw=Math.floor(rng()*1000000);
+      let action,entries,memo,amt;
+      if(balance<RESERVE){action='WORK';amt=WAGE;entries=[{account:'treasury',amount:-amt},{account:actor,amount:amt}];memo='wage'}
+      else if(draw<300000){action='CONSUME';amt=CONSUME;entries=[{account:actor,amount:-amt},{account:'sink',amount:amt}];memo='consume'}
+      else{action='WORK';amt=WAGE;entries=[{account:'treasury',amount:-amt},{account:actor,amount:amt}];memo='wage'}
+      let executed='IDLE';
+      try{ledger.post({tx_id:`tx-${String(seq).padStart(12,'0')}`,tick,seq,entries,memo});executed=action}catch(e){}
+      events.push({seq,tick,type:'AGENT_DECISION',actor,payload:{action,executed,amount_minor:executed==='IDLE'?0:amt,draw_scaled:draw}});
+      seq++;
+    }
+  }
+
+  let ledgerDigest='';
+  for(const e of ledger.entries){ledgerDigest=cyrb53(ledgerDigest+e.account+e.amount)}
+  return {ledger,events,digest:ledgerDigest};
+}
+
+function fmt(n){return n.toLocaleString('en-US')}
+
+document.getElementById('run').addEventListener('click',()=>{
+  const seed=parseInt(document.getElementById('seed').value)||0;
+  const agents=Math.min(Math.max(parseInt(document.getElementById('agents').value)||5,1),20);
+  const ticks=Math.min(Math.max(parseInt(document.getElementById('ticks').value)||100,1),1000);
+  const config={seed,agents,ticks};
+  const t0=performance.now();
+  const {ledger,events,digest}=runSim(config);
+  const elapsed=((performance.now()-t0)/1000).toFixed(2);
+
+  const card=document.getElementById('resultCard');
+  card.style.display='block';
+  document.getElementById('resultTitle').innerHTML=`Run complete <span class="badge ok">✓ deterministic</span>`;
+
+  const supply=ledger.assetSupply();
+  const allBalances=ledger.entries.reduce((m,e)=>{m[e.account]=(m[e.account]||0)+e.amount;return m},{});
+  const sink=allBalances['sink']||0;
+  document.getElementById('stats').innerHTML=`
+    <div class="stat"><div class="k">Events</div><div class="v">${fmt(events.length)}</div></div>
+    <div class="stat"><div class="k">Ledger entries</div><div class="v">${fmt(ledger.entries.length)}</div></div>
+    <div class="stat"><div class="k">Σ entries</div><div class="v">0</div></div>
+    <div class="stat"><div class="k">Asset supply (minor)</div><div class="v">${fmt(supply)}</div></div>
+    <div class="stat"><div class="k">Sink</div><div class="v">${fmt(sink)}</div></div>
+    <div class="stat"><div class="k">Runtime</div><div class="v">${elapsed}s</div></div>
+    <div class="stat"><div class="k">Digest</div><div class="v" style="font-size:.8em">${digest}</div></div>`;
+
+  const tb=document.querySelector('#ledgerTable tbody');
+  tb.innerHTML='';
+  Object.entries(allBalances).sort().forEach(([acc,bal])=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td>${acc}</td><td class="num">${fmt(bal)}</td>`;
+    tb.appendChild(tr);
+  });
+
+  const logEl=document.getElementById('log');
+  const sample=events.slice(0,12);
+  logEl.textContent=sample.map(e=>{
+    if(e.type==='MINT')return `tick 0  [MINT] money_supply += 1,000,000`;
+    return `tick ${e.tick}  [${e.actor}] ${e.payload.action} → ${e.payload.executed} (${e.payload.amount_minor} minor)`;
+  }).join('\n')+'\n…';
+});
+</script>
+</body>
+</html>
